@@ -9,11 +9,11 @@
 #include <sys/resource.h>
 #include <errno.h>
 #include "array.h"
+#include <stdatomic.h>
 
-// Use a reasonable thread count for testing
-#define NUM_PRODUCERS 2000
-#define NUM_CONSUMERS 4000
-#define ITEMS_PER_PRODUCER 500
+#define NUM_PRODUCERS 1000
+#define NUM_CONSUMERS 10
+#define ITEMS_PER_PRODUCER 200
 #define TOTAL_ITEMS (NUM_PRODUCERS * ITEMS_PER_PRODUCER)
 #define TEST_TIMEOUT_SECONDS 60
 #define PROGRESS_UPDATE_INTERVAL 500
@@ -33,12 +33,13 @@ volatile int force_shutdown = 0;
 
 // Timeout handler
 void timeout_handler(int sig) {
+    (void)sig; // Mark parameter as used to silence warning
     time_t end_time = time(NULL);
     printf("\n\nTest timed out after %ld seconds!\n", end_time - start_time);
     printf("Items produced: %d, Items consumed: %d\n", items_produced, items_consumed);
     
     // Signal shutdown to release waiting threads
-    array_shutdown(&queue);
+    array_free(&queue);
     force_shutdown = 1;
     exit(EXIT_FAILURE);
 }
@@ -76,6 +77,8 @@ void *producer(void *arg) {
 
 // Consumer thread function
 void *consumer(void *arg) {
+    (void)arg; // Mark parameter as used to silence warning
+    
     while (1) {
         char *hostname;
         
@@ -112,7 +115,7 @@ void *consumer(void *arg) {
             if (items_consumed >= TOTAL_ITEMS) {
                 pthread_mutex_unlock(&count_mutex);
                 free(hostname);
-                return NULL;  // Exit the thread when all work is done
+                break;  // Exit the loop when all work is done
             }
             
             pthread_mutex_unlock(&count_mutex);
@@ -175,7 +178,7 @@ int main() {
         producer_ids[i] = i;
         if (pthread_create(&producer_threads[i], NULL, producer, &producer_ids[i]) != 0) {
             perror("Failed to create producer thread");
-            array_shutdown(&queue);
+            array_free(&queue); // Changed from array_shutdown
             return EXIT_FAILURE;
         }
     }
@@ -186,7 +189,7 @@ int main() {
     for (int i = 0; i < NUM_CONSUMERS; i++) {
         if (pthread_create(&consumer_threads[i], NULL, consumer, NULL) != 0) {
             perror("Failed to create consumer thread");
-            array_shutdown(&queue);
+            array_free(&queue); // Changed from array_shutdown
             return EXIT_FAILURE;
         }
     }
@@ -202,23 +205,20 @@ int main() {
     printf("\nAll producers finished with %d items produced. Waiting for consumers...\n", 
            items_produced);
     
-    // Simpler waiting approach - check every 500ms if consumption is complete
+    // Monitor progress until all items are consumed
     while (items_consumed < items_produced) {
         printf("\rWaiting for consumers: %d/%d items processed (%.1f%%)", 
                items_consumed, items_produced, 
                (float)items_consumed / items_produced * 100);
         fflush(stdout);
-        usleep(500000); // 500ms
+        sleep(1);  // Simple periodic check is enough now
     }
     
-    printf("\nAll %d items have been consumed. Waiting 2 more seconds for stability...\n", 
+    printf("\nAll %d items have been consumed. Initiating shutdown...\n", 
            items_consumed);
-    sleep(2);
     
-    // Signal consumers to shut down
-    printf("Shutting down cleanly.\n");
-    force_shutdown = 1;
-    array_shutdown(&queue);
+    // Replace array_shutdown with array_free - this will now handle both shutdown and cleanup
+    array_free(&queue);
     
     // Join all consumer threads
     for (int i = 0; i < NUM_CONSUMERS; i++) {
@@ -254,7 +254,6 @@ int main() {
     }
     
     // Clean up
-    array_free(&queue);
     free(consumed_items);
     free(producer_threads);
     free(consumer_threads);

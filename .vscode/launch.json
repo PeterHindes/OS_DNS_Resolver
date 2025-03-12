@@ -8,6 +8,7 @@
             "name": "(lldb) Launch",
             "type": "cppdbg",
             "request": "launch",
+            "internalConsoleOptions": "openOnSessionStart",
             "program": "${workspaceFolder}/test",
             "args": [],
             "stopAtEntry": false,
