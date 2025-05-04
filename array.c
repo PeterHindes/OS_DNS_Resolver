@@ -22,6 +22,7 @@ int array_init(array *s) {
     pthread_cond_init(&s->not_empty, NULL);
     pthread_cond_init(&s->not_full, NULL);
     pthread_cond_init(&s->all_getters_done, NULL);
+    pthread_cond_init(&s->array_emptied, NULL);
     return ARRAY_SUCCESS;
 }
 
@@ -111,6 +112,11 @@ int array_get(array *s, char **storeString) {
     *storeString = s->storeString[s->head];
     s->head = (s->head + 1) % ARRAY_SIZE;
 
+    // Check if the array is now empty and signal if it is
+    if (s->head == s->tail) {
+        pthread_cond_signal(&s->array_emptied);
+    }
+
     // signal that the queue is not full, awakening one putter if any are sleeping
     pthread_cond_signal(&s->not_full);
 
@@ -159,4 +165,5 @@ void array_free(array *s) {
     pthread_cond_destroy(&s->not_empty);
     pthread_cond_destroy(&s->not_full);
     pthread_cond_destroy(&s->all_getters_done);
+    pthread_cond_destroy(&s->array_emptied);
 }

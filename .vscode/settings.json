@@ -2,6 +2,7 @@
     "files.associations": {
         "stdlib.h": "c",
         "unistd.h": "c",
-        "resource.h": "c"
+        "resource.h": "c",
+        "array.h": "c"
     }
 }

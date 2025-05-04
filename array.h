@@ -22,6 +22,7 @@ typedef struct {
     pthread_cond_t not_empty;
     pthread_cond_t not_full;
     pthread_cond_t all_getters_done;  // Signals when all getters are inactive
+    pthread_cond_t array_emptied;     // Signals when the array becomes empty
     int shutdown;                       // Shutdown flag
     atomic_int active_getters;        // Count of active getters
 } array;
