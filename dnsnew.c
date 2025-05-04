@@ -13,7 +13,7 @@
 #include <errno.h>
 #include "array.h"
 
-#define NUM_RESOLVER_THREADS 4  // Define number of resolver threads
+#define NUM_RESOLVER_THREADS 1  // Define number of resolver threads
 
 // hostname_queue is a circular queue of hostnames to be resolved
 array hostname_queue;
@@ -29,15 +29,9 @@ array logfile_queue;
  * when the file threads are done they rejoin the main thread which then waits for the logfile thread and the resolver threads to all be idle and then shuts down
 */
 
-// Updated to match pthread_create's expected signature
-void *file_reader_thread(void *arg) {
-    const char *filename = (const char *)arg;
-    read_file_line_by_line(filename);
-    return NULL;
-}
-
 // read file line by line and insert each line into the hostname queue
-void read_file_line_by_line(const char *filename) {
+void *read_file_line_by_line(void *arg) {
+    const char *filename = (const char *)arg;
     // Open the file for reading
     FILE *file = fopen(filename, "r");
     if (!file) {
@@ -61,7 +55,7 @@ void read_file_line_by_line(const char *filename) {
         // Note: getline() allocates memory for line, so we need to free it
         // free(line);
         // Reset line buffer for next read
-        // line = NULL;
+        line = NULL;
     }
     
     // Free the dynamically allocated memory
@@ -232,7 +226,7 @@ int main(int argc, char *argv[]) {
     // spawn a thread for each file
     pthread_t file_threads[argc - 2];
     for (int i = 2; i < argc; i++) {
-        if (pthread_create(&file_threads[i - 2], NULL, file_reader_thread, (void *)argv[i]) != 0) {
+        if (pthread_create(&file_threads[i - 2], NULL, read_file_line_by_line, (void *)argv[i]) != 0) {
             perror("Failed to create file thread");
             fclose(logfile);
             array_free(&hostname_queue);

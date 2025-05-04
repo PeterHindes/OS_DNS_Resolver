@@ -9,7 +9,7 @@
             "type": "cppdbg",
             "request": "launch",
             "internalConsoleOptions": "openOnSessionStart",
-            "program": "${workspaceFolder}/dnsnew",
+            "program": "${workspaceFolder}/dnsnew.run",
             "args": ["log.txt", "hostnames/names1.txt"],
             "stopAtEntry": false,
             "MIMode": "gdb",
