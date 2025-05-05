@@ -13,13 +13,17 @@
 #include <errno.h>
 #include "array.h"
 
-#define NUM_RESOLVER_THREADS 1  // Define number of resolver threads
+#define NUM_RESOLVER_THREADS 1
 
 // hostname_queue is a circular queue of hostnames to be resolved
 array hostname_queue;
 
 // logfile_queue is a circular queue of log messages to be written to the logfile
 array logfile_queue;
+
+// Mutex and counter to track active file reader threads
+pthread_mutex_t file_reader_mutex = PTHREAD_MUTEX_INITIALIZER;
+int active_file_readers = 0;
 
 /*
  * architecture overview:
@@ -32,40 +36,55 @@ array logfile_queue;
 // read file line by line and insert each line into the hostname queue
 void *read_file_line_by_line(void *arg) {
     const char *filename = (const char *)arg;
-    // Open the file for reading
     FILE *file = fopen(filename, "r");
     if (!file) {
-        perror("Failed to open file");
-        return;
+        fprintf(stderr, "invalid file %s\n", filename);
+        
+        pthread_mutex_lock(&file_reader_mutex);
+        active_file_readers--;
+        if (active_file_readers == 0) {
+            array_free(&hostname_queue);
+        }
+        pthread_mutex_unlock(&file_reader_mutex);
+        
+        return NULL;
     }
     
     char *line = NULL;
     size_t len = 0;
     ssize_t read;
     while ((read = getline(&line, &len, file)) != -1) {
-        // Remove newline character (with safe boundary check)
         if (read > 0 && line[read - 1] == '\n') {
             line[read - 1] = '\0';
         }
-        // Insert the line into the hostname queue
-        if (array_put(&hostname_queue, line) != 0) {
-            fprintf(stderr, "Failed to put hostname into queue: %s\n", line);
+        
+        char *hostname_copy = strdup(line);
+        if (!hostname_copy) {
+            fprintf(stderr, "Failed to allocate memory for hostname\n");
+            continue;
         }
-        // free the line buffer
-        // Note: getline() allocates memory for line, so we need to free it
-        // free(line);
-        // Reset line buffer for next read
-        line = NULL;
+        
+        if (array_put(&hostname_queue, hostname_copy) != 0) {
+            fprintf(stderr, "Failed to put hostname into queue: %s\n", hostname_copy);
+            free(hostname_copy);
+        }
     }
     
-    // Free the dynamically allocated memory
-    // free(line);
+    free(line);
     fclose(file);
+    
+    pthread_mutex_lock(&file_reader_mutex);
+    active_file_readers--;
+    if (active_file_readers == 0) {
+        array_free(&hostname_queue);
+    }
+    pthread_mutex_unlock(&file_reader_mutex);
+    
+    return NULL;
 }
 
 // dns resolve function takes a hostname and resolves it to a ip string returned via pointer
 void *dns_resolve(const char *hostname, char **ip_string) {
-
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC; // Allow IPv4 or IPv6
@@ -90,12 +109,9 @@ void *dns_resolve(const char *hostname, char **ip_string) {
         inet_ntop(res->ai_family, addr, ip, sizeof(ip));
     }
 
-    // Store the resolved IP address in the provided pointer
     *ip_string = strdup(ip);
-
-    freeaddrinfo(res); // Free the linked list
+    freeaddrinfo(res);
     return NULL;
-
 }
 
 // write logfile function (file handler, message)
@@ -116,22 +132,18 @@ void handle_signal(int sig) {
 // callback function to resolve hostname and log result
 void resolve_then_log(const char *hostname) {
     char *ip_string = NULL;
-    // Resolve the hostname
     dns_resolve(hostname, &ip_string);
     char *log_message;
+    
     if (ip_string) {
-        // Log the resolved IP address (using dynamic length)
-        // format example
-        // google.com, 74.125.224.81
         log_message = malloc(strlen(hostname) + strlen(ip_string) + 3);
         if (log_message) {
             sprintf(log_message, "%s, %s", hostname, ip_string);
         } else {
             fprintf(stderr, "Failed to allocate memory for log message\n");
         }
-        free(ip_string); // Free the resolved IP string
+        free(ip_string);
     } else {
-        // Log the failure to resolve
         log_message = malloc(strlen(hostname) + 20);
         if (log_message) {
             sprintf(log_message, "%s, NOT_RESOLVED", hostname);
@@ -140,11 +152,10 @@ void resolve_then_log(const char *hostname) {
         }
     }
 
-    // add the log message to the logfile queue
     if (log_message) {
         if (array_put(&logfile_queue, log_message) != 0) {
             fprintf(stderr, "Failed to put log message into queue: %s\n", log_message);
-            free(log_message); // Free the log message if it couldn't be added to the queue
+            free(log_message);
         }
     }
 }
@@ -154,58 +165,66 @@ void *logfile_thread_func(void *arg) {
     FILE *logfile = (FILE *)arg;
     char *log_message;
     while (1) {
-        // Get log message from the queue
         if (array_get(&logfile_queue, &log_message) == ARRAY_SHUTDOWN) {
-            break; // Shutdown signal received
+            break;
         }
-
-        // Write the log message to the logfile
         write_logfile(logfile, log_message);
-
-        // Free the log message string
         free(log_message);
     }
     return NULL;
 }
 
-// threadmain function for resolver (consumer) threads, it takes a hostname and an array
+// threadmain function for resolver (consumer) threads
 void *resolver_thread(void *arg) {
-    (void)arg;  // Mark parameter as used to silence warning
+    (void)arg;
     
     while (1) {
-        char *hostname;  // Declare hostname here
-        // Get hostname from the queue
+        char *hostname;
         if (array_get(&hostname_queue, &hostname) == ARRAY_SHUTDOWN) {
-            break; // Shutdown signal received
+            break;
         }
-
-        // Resolve and log the hostname
         resolve_then_log(hostname);
-
-        // Free the hostname string
-        // free(hostname);
+        free(hostname);
     }
     return NULL;
 }
 
-// main function takes 
-/*
- <log_file> is name of the file into which all the resolved hostname are written.
-
-<data file> ...  is a list of filenames that are to be processed. Each file contains a list of domain names, one per line, that are to be resolved.
-*/
 int main(int argc, char *argv[]) {
+    // Start timing the execution
+    struct timeval start_time, end_time;
+    gettimeofday(&start_time, NULL);
+    
     // Set up signal handlers
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
     signal(SIGPIPE, SIG_IGN); // Ignore SIGPIPE to prevent termination on broken pipe
-    // open the arguments
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <log_file> [<data_file>...]\n", argv[0]);
+    
+    // Check arguments
+    if (argc < 3) {
+        fprintf(stdout, "Usage: %s <log_file> [<data_file>...]\n", argv[0]);
         exit(EXIT_FAILURE);
     }
+    
+    // Check if each data file exists and is readable before proceeding
+    int valid_files = 0;
+    for (int i = 2; i < argc; i++) {
+        FILE *test_file = fopen(argv[i], "r");
+        if (test_file) {
+            valid_files++;
+            fclose(test_file);
+        } else {
+            fprintf(stderr, "invalid file %s\n", argv[i]);
+        }
+    }
+    
+    // If no valid files were found, print usage and exit
+    if (valid_files == 0) {
+        fprintf(stdout, "Usage: %s <log_file> [<data_file>...]\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+    
     char *log_file = argv[1];
-    FILE *logfile = fopen(log_file, "a");
+    FILE *logfile = fopen(log_file, "w");
     if (!logfile) {
         perror("Failed to open log file");
         exit(EXIT_FAILURE);
@@ -222,6 +241,11 @@ int main(int argc, char *argv[]) {
         array_free(&hostname_queue);
         exit(EXIT_FAILURE);
     }
+
+    // Set the initial count of active file readers to the number of valid files
+    pthread_mutex_lock(&file_reader_mutex);
+    active_file_readers = valid_files;
+    pthread_mutex_unlock(&file_reader_mutex);
 
     // spawn a thread for each file
     pthread_t file_threads[argc - 2];
@@ -254,14 +278,31 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // wait for all threads to finish
-
+    // Wait for all file reading threads to finish
+    for (int i = 0; i < argc - 2; i++) {
+        pthread_join(file_threads[i], NULL);
+    }
+    
+    // Wait for all resolver threads to finish
     for (int i = 0; i < NUM_RESOLVER_THREADS; i++) {
         pthread_join(threads[i], NULL);
     }
 
-    // Free the hostname queue
-    array_free(&hostname_queue);
+    // Signal the logfile queue to shutdown
+    array_free(&logfile_queue);
+    
+    // Wait for the logfile thread to finish
+    pthread_join(logfile_thread, NULL);
+
+    // Close the logfile
     fclose(logfile);
-    return 0;
+    
+    // Calculate and print total runtime
+    gettimeofday(&end_time, NULL);
+    double runtime = (end_time.tv_sec - start_time.tv_sec) + 
+                    ((end_time.tv_usec - start_time.tv_usec) / 1000000.0);
+    
+    printf("%s: total time is %f seconds\n", argv[0], runtime);
+    
+    return EXIT_SUCCESS;
 }

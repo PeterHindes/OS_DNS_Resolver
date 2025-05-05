@@ -53,3 +53,4 @@ dkms.conf
 
 # run files
 *.run
+log.txt

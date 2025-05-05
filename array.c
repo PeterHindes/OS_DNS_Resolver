@@ -27,7 +27,6 @@ int array_init(array *s) {
 }
 
 int array_put(array *s, char *storeString) {
-    // lock the queue
     pthread_mutex_lock(&s->lock);
 
     // Check if shutdown is requested
@@ -54,35 +53,32 @@ int array_put(array *s, char *storeString) {
     s->storeString[s->tail] = storeString;
     s->tail = (s->tail + 1) % ARRAY_SIZE;
 
-    // signal that the queue is not empty, awakening one getter
+    // signal that the queue is not empty
     pthread_cond_signal(&s->not_empty);
 
-    // allow other threads to access the queue
     pthread_mutex_unlock(&s->lock);
 
     return ARRAY_SUCCESS;
 }
 
 int array_get(array *s, char **storeString) {
-    // add this getter to the active count
+    // Track this getter in the active count
     atomic_fetch_add(&s->active_getters, 1);
     
-    // lock the queue
     pthread_mutex_lock(&s->lock);
 
-    // wait until the queue is not empty
+    // Wait until the queue is not empty
     while (!s->shutdown && s->head == s->tail) {
         struct timespec timeout;
         get_timeout(&timeout, 100); // 100ms timeout
         
         pthread_cond_timedwait(&s->not_empty, &s->lock, &timeout);
         
-        // Check for shutdown after waking up
+        // Only exit on shutdown if queue is empty
         if (s->shutdown && s->head == s->tail) {
-            // Mark this getter as no longer active
             int remaining = atomic_fetch_sub(&s->active_getters, 1) - 1;
             
-            // If this was the last active getter, signal that all are done
+            // Signal when last getter is done
             if (remaining == 0) {
                 pthread_cond_signal(&s->all_getters_done);
             }
@@ -95,10 +91,8 @@ int array_get(array *s, char **storeString) {
 
     // Check again if shutdown was requested with an empty queue
     if (s->shutdown && s->head == s->tail) {
-        // Mark this getter as no longer active
         int remaining = atomic_fetch_sub(&s->active_getters, 1) - 1;
         
-        // If this was the last active getter, signal that all are done
         if (remaining == 0) {
             pthread_cond_signal(&s->all_getters_done);
         }
@@ -112,52 +106,64 @@ int array_get(array *s, char **storeString) {
     *storeString = s->storeString[s->head];
     s->head = (s->head + 1) % ARRAY_SIZE;
 
-    // Check if the array is now empty and signal if it is
+    // Signal if the array becomes empty
     if (s->head == s->tail) {
         pthread_cond_signal(&s->array_emptied);
     }
 
-    // signal that the queue is not full, awakening one putter if any are sleeping
+    // signal that the queue is not full
     pthread_cond_signal(&s->not_full);
 
-    // allow other threads to access the queue
     pthread_mutex_unlock(&s->lock);
 
-    // reduce the counter of active getters before returning
+    // Decrement active getters counter
     atomic_fetch_sub(&s->active_getters, 1);
     
     return ARRAY_SUCCESS;
 }
 
 void array_free(array *s) {
-    // First, lock the queue
     pthread_mutex_lock(&s->lock);
     
     // Set the shutdown flag
     s->shutdown = 1;
     
+    // Wait for queue to be processed before completing shutdown
+    if (s->head != s->tail) {        
+        // Wait for the array_emptied signal
+        while (s->head != s->tail) {
+            // Wake up waiting threads to process remaining items
+            pthread_cond_broadcast(&s->not_empty);
+            pthread_cond_broadcast(&s->not_full);
+            
+            // Wait with timeout for progress reporting
+            struct timespec timeout;
+            clock_gettime(CLOCK_REALTIME, &timeout);
+            timeout.tv_sec += 1;
+            
+            int result = pthread_cond_timedwait(&s->array_emptied, &s->lock, &timeout);
+            if (result == 0 || s->head == s->tail) {
+                break;
+            }
+        }
+    }
+    
     // Wake up all waiting threads
     pthread_cond_broadcast(&s->not_empty);
-    // pthread_cond_broadcast(&s->not_full); // Shouldn't produce any more items the queue could be full
+    pthread_cond_broadcast(&s->not_full);
     
-    // Wait for all getters to finish what they're doing
+    // Wait for all getters to finish
     while (atomic_load(&s->active_getters) > 0) {
         struct timespec timeout;
         clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 1;  // 1 second timeout for feedback
+        timeout.tv_sec += 1;
         
-        printf("Waiting for %d active getters to finish...\n", 
-               atomic_load(&s->active_getters));
-        
-        // Wait for all_getters_done signal with timeout for progress reporting
         int result = pthread_cond_timedwait(&s->all_getters_done, &s->lock, &timeout);
         if (result == 0) {
-            // Signal received, all getters done
             break;
         }
     }
     
-    printf("All getters have completed. Shutdown complete.\n");
     pthread_mutex_unlock(&s->lock);
     
     // Clean up synchronization objects
