@@ -2,18 +2,18 @@ CC = gcc
 CFLAGS = -Wall -Wextra -g -pthread
 LDFLAGS = -pthread
 
-all: test.run dnsresolve.run dnsnew.run
+all: test.run dnssimple.run dnsthreaded.run
 
 test.run: array.o test.o
 	$(CC) $(LDFLAGS) -o $@ $^
 
-dnsresolve.run: dnsresolve.o array.o
+dnssimple.run: dnssimple.o
 	$(CC) $(LDFLAGS) -o $@ $^
 
-dnsnew.run: dnsnew.o array.o
+dnsthreaded.run: dnsthreaded.o array.o
 	$(CC) $(LDFLAGS) -o $@ $^
 
-dnsnew.o: dnsnew.c array.h
+dnsthreaded.o: dnsthreaded.c array.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 array.o: array.c array.h
@@ -22,10 +22,10 @@ array.o: array.c array.h
 test.o: test.c array.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-dnsresolve.o: dnsresolve.c array.h
+dnssimple.o: dnssimple.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f test dnsnew dnsresolve *.o
+	rm -f test dnsthreaded dnssimple *.o *.run
 
 .PHONY: all clean

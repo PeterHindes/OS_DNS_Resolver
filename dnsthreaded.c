@@ -13,7 +13,7 @@
 #include <errno.h>
 #include "array.h"
 
-#define NUM_RESOLVER_THREADS 1
+#define NUM_RESOLVER_THREADS 80
 
 // hostname_queue is a circular queue of hostnames to be resolved
 array hostname_queue;
