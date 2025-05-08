@@ -53,3 +53,11 @@ dkms.conf
 
 # test
 test
+
+
+# Ignore all .txt files except those in the hostnames directory
+*.txt
+!hostnames/*.txt
+
+# Ignore .run files which are the compiled code
+*.run
