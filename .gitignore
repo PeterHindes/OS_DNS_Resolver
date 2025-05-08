@@ -57,4 +57,7 @@ log.txt
 
 # dont include text files unless they have "hostnames" in their path
 *.txt
-!*hostnames*.txt
+!hostnames.txt
+
+# Ensure hostnames directory is included
+!hostnames/**
